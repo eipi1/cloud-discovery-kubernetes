@@ -1,0 +1,24 @@
+[package]
+name = "cloud-discovery-kubernetes"
+version = "0.1.0"
+authors = ["sarowar <sarowar.cse@gmail.com>"]
+edition = "2018"
+
+[dependencies.async-trait]
+version = "0.1"
+
+[dependencies.http]
+version = "0.2"
+
+[dependencies.rust-cloud-discovery]
+git = "https://github.com/eipi1/rust-cloud-discovery"
+
+[dependencies.kube]
+version = "0.51"
+
+[dependencies.k8s-openapi]
+version = "0.11"
+features = ["v1_18"]
+
+[dependencies.log]
+version = "0.4"
