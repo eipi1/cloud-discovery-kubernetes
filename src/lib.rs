@@ -1,13 +1,35 @@
+#![warn(missing_docs)]
+
+//!A Kubernetes implementation of [rust-cloud-discovery](https://github.com/eipi1/rust-cloud-discovery)
+//!
+//! Returns list of instances in a kubernetes service. The crate uses kubernetes
+//! [endpoint API](https://kubernetes.io/docs/reference/kubernetes-api/service-resources/endpoints-v1/#get-read-the-specified-endpoints)
+//! (`/api/v1/namespaces/{namespace}/endpoints/{name}`).
+//!
+//! ### Usage
+//! ```rust
+//! # use cloud_discovery_kubernetes::KubernetesDiscoverService;
+//! # use rust_cloud_discovery::{DiscoveryClient, ServiceInstance};
+//! # #[tokio::main]
+//! # async fn main() {
+//!     // initialize kubernetes client
+//!     let k8s = KubernetesDiscoverService::init("demo".to_string(), "default".to_string()).await;
+//!     if let Ok(k8s) = k8s {
+//!         let client = DiscoveryClient::new(k8s);
+//!         client.get_instances().await;
+//!     }
+//! # }
+//! ```
+
 use async_trait::async_trait;
-use k8s_openapi::api::core::v1::{
-    EndpointSubset, Endpoints, ReadNamespacedEndpointsOptional,
-};
+use k8s_openapi::api::core::v1::{EndpointSubset, Endpoints, ReadNamespacedEndpointsOptional};
 use kube::Client;
 use log::trace;
 use rust_cloud_discovery::{DiscoveryService, ServiceInstance};
 use std::collections::HashMap;
 use std::error::Error;
 
+/// A Kubernetes implementation of [rust-cloud-discovery](https://github.com/eipi1/rust-cloud-discovery)
 pub struct KubernetesDiscoverService {
     service: String,
     namespace: String,
@@ -15,14 +37,18 @@ pub struct KubernetesDiscoverService {
 }
 
 impl KubernetesDiscoverService {
+    /// Initialize the discovery service
+    /// # Arguments
+    /// * service - name of the endpoints
+    /// * namespace - Kubernetes namespace
     pub async fn init(
-        service: String,
+        name: String,
         namespace: String,
     ) -> Result<KubernetesDiscoverService, Box<dyn Error>> {
         trace!("trying to init k8s client");
         let client = Client::try_default().await?;
         Ok(KubernetesDiscoverService {
-            service,
+            service: name,
             namespace,
             client,
         })
@@ -92,11 +118,7 @@ impl KubernetesDiscoverService {
     }
 }
 
-fn uri_from_endpoint_address(
-    host: &str,
-    port: Option<usize>,
-    scheme: &str
-) -> Option<String> {
+fn uri_from_endpoint_address(host: &str, port: Option<usize>, scheme: &str) -> Option<String> {
     let port = port?;
     let uri = format!("{}://{}:{}", &scheme, host, port);
     Some(uri)
@@ -104,8 +126,8 @@ fn uri_from_endpoint_address(
 
 #[async_trait]
 impl DiscoveryService for KubernetesDiscoverService {
+    /// Return list of Kubernetes endpoints as `ServiceInstance`s
     async fn discover_instances(&self) -> Result<Vec<ServiceInstance>, Box<dyn Error>> {
         self.get_service_instance().await
-        // unimplemented!()
     }
 }
