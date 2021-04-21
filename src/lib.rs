@@ -22,7 +22,9 @@
 //! ```
 
 use async_trait::async_trait;
-use k8s_openapi::api::core::v1::{EndpointSubset, Endpoints, ReadNamespacedEndpointsOptional};
+use k8s_openapi::api::core::v1::{
+    EndpointPort, EndpointSubset, Endpoints, ReadNamespacedEndpointsOptional,
+};
 use kube::Client;
 use log::trace;
 use rust_cloud_discovery::{DiscoveryService, ServiceInstance};
@@ -82,11 +84,13 @@ impl KubernetesDiscoverService {
     }
 
     fn subset_to_service_instances(subset: &EndpointSubset) -> Vec<ServiceInstance> {
-        let port = subset
+        let (port, secure) = subset
             .ports
             .as_ref()
             .and_then(|p| p.get(0))
-            .map(|ep| ep.port as usize);
+            .map(|ep| parse_port_info(ep))
+            .map(|(p, sec)| (Some(p), sec))
+            .unwrap_or((None, false));
 
         let instances: Vec<ServiceInstance> = vec![];
         subset
@@ -96,7 +100,6 @@ impl KubernetesDiscoverService {
                 let instances: Vec<ServiceInstance> = addresses
                     .iter()
                     .map(|address| {
-                        let secure = false; //org.springframework.cloud.kubernetes.discovery.DefaultIsServicePortSecureResolver#resolve
                         let scheme = if secure { "https" } else { "http" }.to_owned();
                         let uri = uri_from_endpoint_address(&address.ip, port, &scheme);
                         ServiceInstance::new(
@@ -115,6 +118,29 @@ impl KubernetesDiscoverService {
             })
             .or(Some(instances))
             .unwrap()
+    }
+}
+
+fn parse_port_info(ep: &EndpointPort) -> (usize, bool) {
+    let secure = false;
+    let empty_val = "".to_string();
+
+    let port = ep.port as usize;
+    let app_protocol = ep.app_protocol.as_ref().unwrap_or(&empty_val);
+    let name = ep.name.as_ref().unwrap_or(&empty_val);
+
+    //is secure port?
+    let well_known_secure_ports = [443, 8443];
+    let secure_app_protocol = "https";
+
+    if well_known_secure_ports.contains(&port) //well known secure ports
+        || app_protocol == secure_app_protocol //https://kubernetes.io/docs/concepts/services-networking/service/#application-protocol
+        || name.starts_with(secure_app_protocol)
+    // or port has a name that starts with https
+    {
+        (port, true)
+    } else {
+        (port, secure)
     }
 }
 
