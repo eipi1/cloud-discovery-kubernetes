@@ -7,7 +7,7 @@
 //! (`/api/v1/namespaces/{namespace}/endpoints/{name}`).
 //!
 //! ### Usage
-//! ```rust
+//! ```no_run
 //! # use cloud_discovery_kubernetes::KubernetesDiscoverService;
 //! # use rust_cloud_discovery::{DiscoveryClient, ServiceInstance};
 //! # #[tokio::main]
@@ -22,14 +22,18 @@
 //! ```
 
 use async_trait::async_trait;
-use k8s_openapi::api::core::v1::{
-    EndpointPort, EndpointSubset, Endpoints, ReadNamespacedEndpointsOptional,
-};
+use k8s_openapi::api::core::v1::{EndpointSubset, Endpoints, ReadNamespacedEndpointsOptional};
 use kube::Client;
 use log::trace;
-use rust_cloud_discovery::{DiscoveryService, ServiceInstance};
+use rust_cloud_discovery::{DiscoveryService, Port, ServiceInstance};
 use std::collections::HashMap;
 use std::error::Error;
+use std::string::ToString;
+
+const WELL_KNOWN_SECURE_PORTS: [u32; 2] = [443u32, 8443u32];
+const WELL_KNOWN_HTTP_PORTS: [u32; 2] = [80u32, 8080u32];
+const SECURE_APP_PROTOCOL: &str = "https";
+const HTTP_APP_PROTOCOL: &str = "http";
 
 /// A Kubernetes implementation of [rust-cloud-discovery](https://github.com/eipi1/rust-cloud-discovery)
 pub struct KubernetesDiscoverService {
@@ -84,13 +88,39 @@ impl KubernetesDiscoverService {
     }
 
     fn subset_to_service_instances(subset: &EndpointSubset) -> Vec<ServiceInstance> {
-        let (port, secure) = subset
+        let ports = subset
             .ports
             .as_ref()
-            .and_then(|p| p.get(0))
-            .map(|ep| parse_port_info(ep))
-            .map(|(p, sec)| (Some(p), sec))
-            .unwrap_or((None, false));
+            .into_iter()
+            .flatten()
+            .map(|port| {
+                Port::new(
+                    port.name.clone(),
+                    port.port as u32,
+                    port.protocol.clone().unwrap_or_else(|| "TCP".to_string()),
+                    port.app_protocol.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        // set default port in priority
+        // https > http > others
+        // if there's multiple ports of same kind, first one in the list has higher priority
+        let mut default_port = None;
+        let mut has_secure = false;
+        let mut has_http = false;
+        for port in &ports {
+            if default_port.is_none() {
+                default_port = Some(port.get_port());
+            } else if is_secure(port) {
+                default_port = Some(port.get_port());
+                has_secure = true;
+                break;
+            } else if !has_http && is_http(port) {
+                default_port = Some(port.get_port());
+                has_http = true;
+            }
+        }
 
         let instances: Vec<ServiceInstance> = vec![];
         subset
@@ -100,14 +130,14 @@ impl KubernetesDiscoverService {
                 let instances: Vec<ServiceInstance> = addresses
                     .iter()
                     .map(|address| {
-                        let scheme = if secure { "https" } else { "http" }.to_owned();
-                        let uri = uri_from_endpoint_address(&address.ip, port, &scheme);
+                        let scheme = if has_secure { "https" } else { "http" }.to_owned();
+                        let uri = uri_from_endpoint_address(&address.ip, default_port, &scheme);
                         ServiceInstance::new(
                             address.target_ref.as_ref().and_then(|t| t.uid.clone()),
                             None,
                             Some(address.ip.clone()),
-                            port,
-                            secure,
+                            Some(ports.clone()),
+                            has_secure,
                             uri,
                             HashMap::new(),
                             Some(scheme),
@@ -116,35 +146,47 @@ impl KubernetesDiscoverService {
                     .collect();
                 instances
             })
-            .or(Some(instances))
-            .unwrap()
+            .unwrap_or_else(|| instances)
     }
 }
 
-fn parse_port_info(ep: &EndpointPort) -> (usize, bool) {
-    let secure = false;
-    let empty_val = "".to_string();
+fn is_secure(port: &Port) -> bool {
+    let port_n = port.get_port();
+    let app_protocol = port
+        .get_app_protocol()
+        .as_ref()
+        .map(|s| s.as_str())
+        .unwrap_or_else(|| "");
+    let name = port
+        .get_name()
+        .as_ref()
+        .map(|s| s.as_str())
+        .unwrap_or_else(|| "");
 
-    let port = ep.port as usize;
-    let app_protocol = ep.app_protocol.as_ref().unwrap_or(&empty_val);
-    let name = ep.name.as_ref().unwrap_or(&empty_val);
-
-    //is secure port?
-    let well_known_secure_ports = [443, 8443];
-    let secure_app_protocol = "https";
-
-    if well_known_secure_ports.contains(&port) //well known secure ports
-        || app_protocol == secure_app_protocol //https://kubernetes.io/docs/concepts/services-networking/service/#application-protocol
-        || name.starts_with(secure_app_protocol)
-    // or port has a name that starts with https
-    {
-        (port, true)
-    } else {
-        (port, secure)
-    }
+    WELL_KNOWN_SECURE_PORTS.contains(&port_n) //well known secure ports
+        || app_protocol == SECURE_APP_PROTOCOL //https://kubernetes.io/docs/concepts/services-networking/service/#application-protocol
+        || name.starts_with(SECURE_APP_PROTOCOL) // or port has a name that starts with https
 }
 
-fn uri_from_endpoint_address(host: &str, port: Option<usize>, scheme: &str) -> Option<String> {
+fn is_http(port: &Port) -> bool {
+    let port_n = port.get_port();
+    let app_protocol = port
+        .get_app_protocol()
+        .as_ref()
+        .map(|s| s.as_str())
+        .unwrap_or_else(|| "");
+    let name = port
+        .get_name()
+        .as_ref()
+        .map(|s| s.as_str())
+        .unwrap_or_else(|| "");
+
+    WELL_KNOWN_HTTP_PORTS.contains(&port_n) //well known secure ports
+        || app_protocol == HTTP_APP_PROTOCOL //https://kubernetes.io/docs/concepts/services-networking/service/#application-protocol
+        || name.starts_with(HTTP_APP_PROTOCOL) // or port has a name that starts with https
+}
+
+fn uri_from_endpoint_address(host: &str, port: Option<u32>, scheme: &str) -> Option<String> {
     let port = port?;
     let uri = format!("{}://{}:{}", &scheme, host, port);
     Some(uri)
